@@ -1,0 +1,17 @@
+{
+  "cinemaId": 1,
+  "cinemaName": "Majestic City",
+  "movieId": 10,
+  "title": "Inception",
+  "description": "A dream heist movie",
+  "posterUrl": null,
+  "showtimeId": 100,
+  "showDate": "2026-12-01",
+  "showTime": "18:30",
+  "price": 1200.00,
+  "totalSeats": 60,
+  "seatsPerRow": 6,
+  "reservedSeats": [1, 2],
+  "availableSeats": 58,
+  "active": true
+}
