@@ -1,238 +1,266 @@
-# Cinema App – Kafka Communication Contract
-
-**Organization:** Cine Cinema  
-**Project:** Challenge 3 – Cinema App  
-**Status:** DRAFT – Awaiting approval from both developers
+# Cine Cinema – Kafka Message Contracts
 
 ## 1. Purpose
 
-This document defines the communication contract between the Cinema Side and Movie/Fan Side applications.
+This document defines the Kafka messages exchanged between the Cinema Backend and the Fan Backend.
 
-Both applications use separate Spring Boot backends and PostgreSQL databases.
+Both applications are developed independently and communicate using agreed JSON message structures.
 
-Apache Kafka is used to exchange information between the applications.
-
-Both developers must follow the same topic names, JSON field names, data types and reservation rules.
+The Cinema Backend is authoritative for showtimes, ticket prices, seat availability, and reservation decisions.
 
 ## 2. Kafka Topics
 
-Exactly three topics are used.
-
 | Topic | Producer | Consumer | Purpose |
 |---|---|---|---|
-| cinema.catalog | Cinema Side | Movie/Fan Side | Publish movie and showtime information |
-| reservation.requests | Movie/Fan Side | Cinema Side | Send customer reservation requests |
-| reservation.results | Cinema Side | Movie/Fan Side | Send reservation results and payment updates |
+| `cinema.catalog` | Cinema Backend | Fan Backend | Showtime catalog synchronization |
+| `reservation.requests` | Fan Backend | Cinema Backend | Customer reservation requests |
+| `reservation.results` | Cinema Backend | Fan Backend | Reservation processing results |
 
-## 3. Topic: cinema.catalog
+**Message format:** UTF-8 encoded JSON.
 
-**Direction:** Cinema Side → Movie/Fan Side
+Topic names and JSON property names are case-sensitive.
 
-### Purpose
+## 3. Reservation Request
 
-The Cinema Side publishes a complete showtime snapshot whenever relevant movie, showtime or seat information changes.
+**Topic:** `reservation.requests`
 
-The Movie/Fan Side consumes the message and stores its own copy.
+**Message key:** `reservationId`
 
-### Message key
+**Producer:** Fan Backend
 
-The Kafka record key is `showtimeId`.
+**Consumer:** Cinema Backend
 
-Use one partition initially to maintain message ordering.
-
-### JSON structure
+### Example
 
 ```json
 {
-  "cinemaId": 1,
-  "cinemaName": "Majestic City",
-  "movieId": 10,
-  "title": "Inception",
-  "description": "A dream heist movie",
-  "posterUrl": null,
-  "showtimeId": 100,
-  "showDate": "2026-12-01",
-  "showTime": "18:30",
-  "price": 1200.00,
-  "totalSeats": 60,
-  "seatsPerRow": 6,
-  "reservedSeats": [1, 2],
-  "availableSeats": 58,
-  "active": true
+  "reservationId": "e55a89a1-7f39-4d16-9fb4-b933637a1013",
+  "showtimeId": 8,
+  "customerId": 101,
+  "customerName": "John Silva",
+  "seatNumbers": [5, 6]
 }
 ```
 
-### Field definitions
+### Fields
 
-| Field | Type | Description |
-|---|---|---|
-| cinemaId | Long | Cinema identifier |
-| cinemaName | String | Cinema name |
-| movieId | Long | Movie identifier |
-| title | String | Movie title |
-| description | String | Movie description |
-| posterUrl | String/null | Public movie poster URL |
-| showtimeId | Long | Showtime identifier |
-| showDate | String | Showtime date |
-| showTime | String | Showtime time |
-| price | Decimal | Price per seat |
-| totalSeats | Integer | Total seats |
-| seatsPerRow | Integer | Number of seats in each row |
-| reservedSeats | Integer array | Already reserved seat numbers |
-| availableSeats | Integer | Number of available seats |
-| active | Boolean | Whether the showtime is active |
+| Field | Type | Required | Description |
+|---|---|---|---|
+| `reservationId` | String | Yes | UUID-formatted unique reservation identifier |
+| `showtimeId` | Long | Yes | ID of the requested showtime |
+| `customerId` | Long | Yes | Customer ID from Fan Backend |
+| `customerName` | String | Yes | Customer display name, maximum 100 characters |
+| `seatNumbers` | Array of integers | Yes | Requested seat numbers |
 
-### Rules
+### Validation Rules
 
-1. Every message contains a complete snapshot of one showtime.
-2. The Movie/Fan Side identifies records using showtimeId.
-3. New messages overwrite the corresponding showtime snapshot.
-4. Reserved seats must be displayed as unavailable.
-5. Seat numbers are integers starting from 1.
-6. `availableSeats = totalSeats - reservedSeats.length`.
-7. `posterUrl` can be null.
-8. The image bytes are never sent through Kafka. Only the image URL is published.
-9. The Cinema Side republishes the showtime snapshot when reserved seats change.
+1. `reservationId` must be a valid UUID-formatted string.
+2. `showtimeId` must identify an existing showtime.
+3. `customerId` must be positive.
+4. `customerName` must not be blank.
+5. `seatNumbers` must contain at least one seat.
+6. Every requested seat number must be positive.
+7. Seat numbers must not be duplicated within the request.
+8. Requested seats must exist in the selected showtime.
+9. The showtime must be active and must not have started.
+10. Every requested seat must be available.
+11. The Cinema Backend calculates the total amount from the authoritative showtime ticket price.
+12. All seats in one request are confirmed together or the entire request is rejected.
 
-## 4. Topic: reservation.requests
+### Retry Rule
 
-**Direction:** Movie/Fan Side → Cinema Side
+The Fan Backend must reuse the same `reservationId` when retrying delivery of the same booking attempt.
 
-### Purpose
+A retry must preserve the original booking information.
 
-When a customer reserves seats, the Movie/Fan Side creates a reservation with PENDING status and publishes a request.
+A new booking attempt requires a new reservation ID.
 
-### JSON structure
+## 4. Reservation Result
 
-```json
-{
-  "reservationId": "550e8400-e29b-41d4-a716-446655440000",
-  "showtimeId": 100,
-  "customerId": 5,
-  "customerName": "Nimali",
-  "seats": [3, 4]
-}
-```
+**Topic:** `reservation.results`
 
-### Field definitions
+**Message key:** `reservationId`
 
-| Field | Type | Description |
-|---|---|---|
-| reservationId | String | Unique UUID generated by Movie/Fan Side |
-| showtimeId | Long | Requested showtime |
-| customerId | Long | Customer identifier |
-| customerName | String | Customer name |
-| seats | Integer array | Selected seat numbers |
+**Producer:** Cinema Backend
 
-### Rules
+**Consumer:** Fan Backend
 
-1. Seats are represented using numbers, not letters.
-2. The request must contain individually selected seat numbers.
-3. The Cinema Side validates every requested seat.
-4. Duplicate seat numbers in one request are invalid.
-5. A requested seat must be between 1 and totalSeats.
-6. A seat that is already reserved cannot be booked again.
-7. Reservations are all-or-nothing.
-8. If any requested seat is invalid or unavailable, reject the complete reservation.
-9. The reservationId is used to identify duplicate requests.
-10. If a reservationId has already been processed, the Cinema Side must not reserve the seats again.
-
-## 5. Topic: reservation.results
-
-**Direction:** Cinema Side → Movie/Fan Side
-
-### Purpose
-
-The Cinema Side publishes reservation results and later payment updates.
-
-### JSON structure
+### Confirmed Example
 
 ```json
 {
-  "reservationId": "550e8400-e29b-41d4-a716-446655440000",
+  "reservationId": "e55a89a1-7f39-4d16-9fb4-b933637a1013",
   "status": "CONFIRMED",
   "reason": null
 }
 ```
 
-### Field definitions
+### Rejected Example
+
+```json
+{
+  "reservationId": "e55a89a1-7f39-4d16-9fb4-b933637a1013",
+  "status": "REJECTED",
+  "reason": "Seat 5 is already reserved"
+}
+```
+
+### Fields
+
+| Field | Type | Required | Description |
+|---|---|---|---|
+| `reservationId` | String | Yes | Matches the original reservation request |
+| `status` | String | Yes | `CONFIRMED` or `REJECTED` |
+| `reason` | String or null | Yes | Explanation when a reservation is rejected |
+
+### Processing Rules
+
+1. The Cinema Backend validates incoming reservation requests.
+2. Only the Cinema Backend can confirm a reservation.
+3. A confirmed reservation allocates all requested seats.
+4. A rejected reservation does not allocate any seats.
+5. The Fan Backend matches the response using `reservationId`.
+6. A repeated booking request should not allocate seats again.
+7. Reservation results must reflect committed database operations.
+8. Database or messaging failures require safe retry/error handling.
+
+**Note:** The Cinema database also supports `PAID`. Payment-status synchronization will be agreed separately before implementation.
+
+## 5. Cinema Catalog Snapshot
+
+**Topic:** `cinema.catalog`
+
+**Message key:** `showtimeId`, represented as a string for the Kafka key.
+
+**Producer:** Cinema Backend
+
+**Consumer:** Fan Backend
+
+Each message represents the latest known complete snapshot of one showtime.
+
+### Proposed Example
+
+```json
+{
+  "showtimeId": 8,
+  "movieId": 1,
+  "movieTitle": "Avengers: Endgame",
+  "posterUrl": "/api/movies/1/poster",
+  "showDate": "2027-01-15",
+  "showTime": "10:00:00",
+  "endDate": "2027-01-15",
+  "endTime": "13:01:00",
+  "price": 1500.00,
+  "totalSeats": 10,
+  "seatsPerRow": 5,
+  "reservedSeats": [1, 2],
+  "availableSeats": 8,
+  "active": true
+}
+```
+
+### Fields
 
 | Field | Type | Description |
 |---|---|---|
-| reservationId | String | Reservation UUID |
-| status | String | Reservation status |
-| reason | String/null | Rejection reason when applicable |
+| `showtimeId` | Long | Unique showtime identifier |
+| `movieId` | Long | Movie identifier |
+| `movieTitle` | String | Movie title |
+| `posterUrl` | String or null | Relative public movie poster path |
+| `showDate` | String | Date in `YYYY-MM-DD` format |
+| `showTime` | String | Local time in `HH:mm:ss` format |
+| `endDate` | String | Calculated ending date |
+| `endTime` | String | Calculated ending time |
+| `price` | Decimal number | Cinema-authoritative ticket price |
+| `totalSeats` | Integer | Total seating capacity |
+| `seatsPerRow` | Integer | Seats in each generated row |
+| `reservedSeats` | Array of integers | Confirmed or paid seat allocations |
+| `availableSeats` | Integer | Total seats minus reserved seat count |
+| `active` | Boolean | Whether the manager has enabled bookings |
 
-### Allowed statuses
+### Catalog Rules
 
-| Status | Meaning |
+1. The Cinema Backend owns catalog information.
+2. Catalog messages contain a complete showtime snapshot, not only changed fields.
+3. The Fan Backend stores the latest received catalog state in its own database.
+4. The Cinema Backend publishes changes after successful database commits.
+5. Seat availability may change between catalog updates and booking requests.
+6. The Cinema Backend must validate every incoming reservation against its own database.
+7. An inactive showtime is not available for new reservations, even if seats are unreserved.
+8. The `posterUrl` must be resolved using a Cinema Backend address reachable by the Fan application.
+
+**Compatibility note:** Compare this proposed snapshot with any existing shared `catalog.json` and `catalog.proto` before changing their agreed field names.
+
+## 6. gRPC Catalog Synchronization
+
+Kafka provides catalog updates during normal operation.
+
+The Fan Backend additionally uses the gRPC method:
+
+```text
+CatalogService.ListShowtimes
+```
+
+The Cinema Backend streams current showtime snapshots so the Fan Backend can initialize or refresh its local catalog.
+
+The gRPC snapshot and Kafka catalog event must represent consistent business information.
+
+The protobuf schema remains in the shared repository.
+
+## 7. Networking
+
+Both applications run on separate computers on the same local network.
+
+- Cinema REST Backend: port `8082`.
+- Fan REST Backend: port `8080`.
+- Kafka broker address: configurable.
+- Cinema gRPC endpoint: configurable.
+
+Do not hardcode changing computer IP addresses into Java source files.
+
+Use environment variables or resolvable local hostnames.
+
+Each backend owns its PostgreSQL database. Database ports and credentials are not part of the Kafka message contracts.
+
+## 8. Security and Reliability
+
+1. Do not include passwords, JWT tokens, or database credentials in Kafka messages.
+2. Do not include payment-card information in Kafka messages.
+3. Use reservation IDs to correlate requests and results.
+4. Preserve message ordering where required by choosing appropriate Kafka message keys.
+5. Prevent double bookings using Cinema Backend validation, database transactions, locking, and uniqueness constraints.
+6. Implement retry handling without creating duplicate reservations.
+7. Handle failures between database commits and Kafka publishing.
+8. Do not interpret a Kafka delivery acknowledgment as proof that a reservation was confirmed.
+
+## 9. Current Implementation Status
+
+| Component | Status |
 |---|---|
-| CONFIRMED | Requested seats successfully reserved |
-| REJECTED | Reservation could not be completed |
-| PAID | Customer has paid at the cinema |
+| Cinema reservation entities | Implemented |
+| Cinema reservation repositories | Implemented |
+| Cinema ReservationService | Implemented |
+| Basic concurrent reservation test | Passed |
+| Confirmed-reservation retry test | Passed |
+| Kafka contract documentation | This lesson |
+| Kafka broker integration | Pending |
+| Kafka request consumer | Pending |
+| Kafka result producer | Pending |
+| Live catalog producer | Pending |
+| gRPC catalog service | Pending |
+| Cross-computer integration | Pending |
 
-### Rules
+## 10. Agreement Between Developers
 
-1. CONFIRMED or REJECTED is published immediately after processing a reservation request.
-2. If rejected, the reason must describe the problem.
-3. After payment, cinema staff mark the reservation as PAID.
-4. PAID is published through the same reservation.results topic.
-5. The Movie/Fan Side updates its local reservation status after receiving the result.
+Before implementing integration, both developers should confirm:
 
-## 6. Seat Management Rules
+- Kafka topic names.
+- JSON property names and data types.
+- Reservation ID generation and retry rules.
+- Booking status values.
+- Catalog snapshot fields.
+- Kafka message keys.
+- Local network broker configuration.
+- Error-handling and retry responsibilities.
 
-Seats are represented by numerical identifiers.
-
-Example:
-
-- Total seats: 60
-- Seats per row: 6
-- Valid seat numbers: 1–60
-
-Available seats are calculated using:
-
-`availableSeats = totalSeats - reservedSeats.length`
-
-The Cinema Side database is the final authority for seat availability.
-
-A unique database constraint must prevent two reservations from booking the same seat for the same showtime:
-
-`UNIQUE (showtime_id, seat_number)`
-
-The complete reservation must succeed or fail together.
-
-If one requested seat is unavailable, none of the requested seats are booked.
-
-## 7. Duplicate Message Handling
-
-Kafka messages may be delivered more than once.
-
-The Cinema Side must check reservationId before processing a reservation request.
-
-If the reservation already exists, it must not deduct or reserve seats again.
-
-## 8. JSON Compatibility
-
-Both applications must ignore unknown JSON fields.
-
-Spring Boot message DTO classes should use:
-
-`@JsonIgnoreProperties(ignoreUnknown = true)`
-
-This allows either developer to introduce additional fields without immediately breaking the other application.
-
-Do not introduce eventId or version fields into the current contract.
-
-## 9. Database Independence
-
-The applications maintain separate PostgreSQL databases.
-
-Neither application directly accesses the other application's database.
-
-All cross-application information is transferred through Kafka.
-
-## 10. Agreement
-
-Both developers must review and approve this contract before implementing Kafka producers and consumers.
-
-Any change to an existing field, topic or message structure must be communicated to both developers and reflected in this document.
+Any future breaking contract change must be coordinated between the Cinema Side and Fan Side developers.
